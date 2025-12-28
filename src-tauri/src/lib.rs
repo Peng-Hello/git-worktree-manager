@@ -88,6 +88,190 @@ fn list_worktrees(project_path: String) -> Result<Vec<Worktree>, String> {
     Ok(parse_worktrees(&String::from_utf8_lossy(&output.stdout)))
 }
 
+use walkdir::{WalkDir, DirEntry};
+use std::collections::HashSet;
+
+fn link_gitignored_items(project_path: &str, worktree_path: &str) {
+    let project_dir = std::path::Path::new(project_path);
+    let worktree_dir = std::path::Path::new(worktree_path);
+    let gitignore_path = project_dir.join(".gitignore");
+
+    println!("Scanning for recursive ignore targets via .gitignore...");
+
+    let mut ignore_targets = HashSet::new();
+    // Default commons just in case (optional, but requested based on .gitignore)
+    // ignore_targets.insert("node_modules".to_string());
+    // ignore_targets.insert(".env".to_string());
+
+    if gitignore_path.exists() {
+         if let Ok(content) = std::fs::read_to_string(&gitignore_path) {
+             for line in content.lines() {
+                 let line = line.trim();
+                 if line.is_empty() || line.starts_with('#') { continue; }
+                 
+                 // Clean up pattern: /node_modules -> node_modules, node_modules/ -> node_modules
+                 let clean = line.replace('\\', "/");
+                 let clean = clean.trim_matches('/');
+                 
+                 // We collect names. Simple logic: if a dir matches this name, we link it.
+                 // This covers standard "node_modules" rules.
+                 // Complex globs like "*.log" are harder with this approach but simple names cover 90% of cases.
+                 if !clean.is_empty() {
+                    ignore_targets.insert(clean.to_string());
+                 }
+             }
+         }
+    } else {
+        println!("No .gitignore found, skipping auto-link.");
+        return;
+    }
+    
+    if ignore_targets.is_empty() {
+        return;
+    }
+
+    println!("Targets to link: {:?}", ignore_targets);
+
+    // Recursive walk
+    let walker = WalkDir::new(project_dir).min_depth(1).into_iter();
+    
+    // We strictly want to skip descending into the directories we link, 
+    // AND skip hidden git dirs to save time.
+    fn is_ignored(entry: &DirEntry, targets: &HashSet<String>) -> bool {
+        entry.file_name()
+             .to_str()
+             .map(|s| targets.contains(s) || s == ".git" || s == ".vs" || s == "node_modules") 
+             // We check node_modules explicitly here to ensure we don't scan INSIDE a source node_modules if we missed adding it to targets
+             .unwrap_or(false)
+    }
+
+    // Custom filtering loop to control skipping
+    let mut it = walker.filter_entry(|e| !is_ignored(e, &ignore_targets));
+
+    // Wait, filter_entry skips descending but DOES yield the entry itself.
+    // Actually we want:
+    // 1. Visit entry.
+    // 2. If entry matches target -> Link it -> Skip recursion.
+    // 3. If entry is .git -> Skip recursion.
+    // 4. Else -> recurse.
+    
+    // WalkDir's filter_entry is: if false, skip directory.
+    // But we need to distinguish "Link this dir and stop" vs "Ignore this dir".
+    // Let's iterate manually using standard recursive iterator logic or just loop WalkDir without filter_entry 
+    // and manually skip? No, WalkDir provides skip_current_dir().
+
+    let mut iterator = WalkDir::new(project_dir).min_depth(1).into_iter();
+
+    // Collect failed links to run in batch
+    let mut pending_admin_links = Vec::new();
+
+    loop {
+        let entry = match iterator.next() {
+            None => break,
+            Some(Err(_)) => continue,
+            Some(Ok(e)) => e,
+        };
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        
+        // Safety skip
+        if file_name == ".git" {
+            iterator.skip_current_dir();
+            continue;
+        }
+
+        if ignore_targets.contains(&file_name) {
+            let src_path = entry.path();
+            
+            if let Ok(rel) = src_path.strip_prefix(project_dir) {
+                let dest_path = worktree_dir.join(rel);
+                
+                if let Some(parent) = dest_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+
+                if !dest_path.exists() {
+                     #[cfg(target_os = "windows")]
+                     {
+                        if src_path.is_dir() {
+                             let dest_str = dest_path.display().to_string().replace("/", "\\");
+                             let src_str = src_path.display().to_string().replace("/", "\\");
+                             let cmd_str = format!("mklink /J \"{}\" \"{}\"", dest_str, src_str);
+                             
+                             let output = Command::new("cmd").arg("/C").arg(&cmd_str).output();
+                             let mut success = false;
+                             if let Ok(o) = output {
+                                 if o.status.success() {
+                                     println!("Linked: {} -> {}", src_path.display(), dest_path.display());
+                                     success = true;
+                                 }
+                             }
+                             
+                             if !success {
+                                 println!("Requires Admin: {}", dest_path.display());
+                                 pending_admin_links.push(cmd_str);
+                             }
+                        } else {
+                            // File Fallback Chain
+                            let _ = std::os::windows::fs::symlink_file(src_path, &dest_path)
+                                .or_else(|_| std::fs::hard_link(src_path, &dest_path))
+                                .or_else(|_| std::fs::copy(src_path, &dest_path).map(|_| ()));
+                        }
+                     }
+                }
+            }
+            if entry.file_type().is_dir() {
+                iterator.skip_current_dir();
+            }
+        }
+    }
+    
+    // Batch Execute Admin Links
+    if !pending_admin_links.is_empty() {
+        println!("requesting admin for {} items...", pending_admin_links.len());
+        
+        // Use PowerShell script instead of Batch to handle Encoding/Unicode correctly.
+        // We prepend the UTF-8 BYTE ORDER MARK (BOM) so PowerShell explicitly knows it's UTF-8.
+        let mut ps1_content = String::from("\u{FEFF}"); 
+        ps1_content.push_str("$ErrorActionPreference = 'Stop'\n");
+
+        for cmd in pending_admin_links {
+            // cmd contains: mklink /J "dest" "src"
+            // In PowerShell, we run this via cmd /c. 
+            // We need to escape quotes if necessary, but usually single quotes around the whole string works best in PS.
+            // Example: cmd /c 'mklink /J "dest" "src"'
+            
+            // However, our cmd string already has quotes. 
+            // Let's rely on PS parsing. 
+            // cmd /c mklink /J "D:\..." "D:\..."
+            // In PS script: cmd /c $cmd  -- wait, $cmd needs to be exact.
+            
+            // outputting: cmd /c "mklink /J \"dest\" \"src\""
+            
+            // Simplest way: Write exact command line.
+            // cmd /c $cmd
+            
+            ps1_content.push_str(&format!("cmd /c '{}'\n", cmd));
+        }
+        
+        ps1_content.push_str("Write-Host 'Press Key to exit...'\n");
+        ps1_content.push_str("$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')\n");
+        
+        let temp_dir = std::env::temp_dir();
+        let ps1_path = temp_dir.join("git_worktree_links.ps1");
+        
+        if std::fs::write(&ps1_path, ps1_content).is_ok() {
+            let ps1_path_str = ps1_path.display().to_string();
+            
+            // Run PowerShell as Admin, executing the generated script
+            let _ = Command::new("powershell")
+                .arg("-Command")
+                .arg(format!("Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy Bypass -File \"{}\"' -Wait", ps1_path_str))
+                .output();
+        }
+    }
+}
+
 #[tauri::command]
 fn create_worktree(project_path: String, path: String, branch: String, base: Option<String>) -> Result<(), String> {
     let mut cmd = Command::new("git");
@@ -107,6 +291,10 @@ fn create_worktree(project_path: String, path: String, branch: String, base: Opt
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
+
+    // Auto-link gitignored files
+    link_gitignored_items(&project_path, &path);
+
     Ok(())
 }
 
