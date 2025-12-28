@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Worktree } from "./types";
+import type { Worktree } from "./types";
 
 import { listen } from "@tauri-apps/api/event";
 
@@ -49,12 +49,11 @@ async function checkClaudeSessions() {
 // ... (skip to onMounted) ...
 // Poll backend status every 3 seconds to keep UI in sync
 // This detects when terminal windows are closed
-let pollInterval: number | null = null;
 
 
 onMounted(async () => {
     checkClaudeSessions(); // Initial check
-    pollInterval = window.setInterval(checkClaudeSessions, 3000);
+    window.setInterval(checkClaudeSessions, 3000);
     
     // Install hooks and listen
     try {
