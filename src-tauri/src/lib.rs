@@ -301,6 +301,7 @@ fn create_worktree(project_path: String, path: String, branch: String, base: Opt
 #[tauri::command]
 fn remove_worktree(project_path: String, worktree_path: String, branch: Option<String>) -> Result<(), String> {
     // 1. Remove Worktree
+    // We use --force, but if it fails (e.g. locked files or strange junctions), we manual clean.
     let output = Command::new("git")
         .current_dir(&project_path)
         .arg("worktree")
@@ -310,9 +311,26 @@ fn remove_worktree(project_path: String, worktree_path: String, branch: Option<S
         .output()
         .map_err(|e| e.to_string())?;
 
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    // Even if git fails (e.g. "not empty"), we try to force remove the directory manually
+    // because we know we created junctions that git might choke on.
+    let path_obj = std::path::Path::new(&worktree_path);
+    if path_obj.exists() {
+        println!("Git remove finished (success={}), but dir exists. Force removing: {}", output.status.success(), worktree_path);
+        // std::fs::remove_dir_all is safe for symlinks/junctions (does not follow)
+        if let Err(e) = std::fs::remove_dir_all(path_obj) {
+            println!("Failed to force remove directory: {}", e);
+            // If git failed AND we failed to delete, then return error.
+            if !output.status.success() {
+                 return Err(format!("Git failed: {}; Force remove failed: {}", String::from_utf8_lossy(&output.stderr), e));
+            }
+        }
+    } else if !output.status.success() {
+         // Dir gone but git reported error?
+         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
+
+    // Run prune to clean up any stale git metadata if git command failed but we deleted dir
+    let _ = Command::new("git").current_dir(&project_path).arg("worktree").arg("prune").output();
 
     // 2. Delete Branch if provided
     if let Some(branch_name) = branch {
