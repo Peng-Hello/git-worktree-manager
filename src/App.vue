@@ -9,9 +9,98 @@ const globalRoot = ref<string>(""); // Global root for new worktrees
 const worktrees = ref<Worktree[]>([]);
 const errorMsg = ref<string>("");
 const loading = ref(false);
-
-// New Worktree Form
 const showModal = ref(false);
+const activeClaudeSessions = ref<Set<string>>(new Set());
+
+async function checkClaudeSessions() {
+    try {
+        const sessions = await invoke("list_claude_sessions");
+        activeClaudeSessions.value = new Set(sessions as string[]);
+    } catch (e) {
+        console.error("Failed to list active sessions:", e);
+    }
+}
+
+async function openClaude(path: string) {
+    loading.value = true;
+    try {
+        await invoke("open_claude", { path });
+        // Add to local state optimistically, backend confirms
+        activeClaudeSessions.value.add(path);
+        // Maybe trigger a refresh of status just in case
+        setTimeout(checkClaudeSessions, 500); 
+    } catch (e) {
+        errorMsg.value = "Failed to launch Claude: " + String(e);
+    } finally {
+        loading.value = false;
+    }
+}
+
+async function focusClaude(path: string) {
+    try {
+        await invoke("focus_claude", { path });
+    } catch (e) {
+        errorMsg.value = "Focus failed (Terminal might be closed): " + String(e);
+        activeClaudeSessions.value.delete(path);
+    }
+}
+
+async function closeClaude(path: string) {
+    if (!confirm("Are you sure you want to close this terminal session?")) return;
+    loading.value = true;
+    try {
+        await invoke("kill_claude_session", { path });
+        activeClaudeSessions.value.delete(path);
+        // Force a check just in case
+        setTimeout(checkClaudeSessions, 500);
+    } catch (e) {
+        errorMsg.value = "Failed to close session: " + String(e);
+    } finally {
+        loading.value = false;
+    }
+}
+
+// Call check on mount or when loading worktrees
+// We can hook it into loadWorktrees
+async function loadWorktrees() {
+  if (!projectPath.value) {
+    console.log("loadWorktrees aborted: No projectPath");
+    return;
+  }
+  console.log("Loading worktrees for:", projectPath.value);
+  loading.value = true;
+  errorMsg.value = "";
+  try {
+    const res = await invoke("list_worktrees", { projectPath: projectPath.value });
+    console.log("backend response:", res);
+    worktrees.value = res as Worktree[];
+    console.log("worktrees.value set to:", worktrees.value);
+    checkClaudeSessions(); // Sync status
+  } catch (e) {
+    console.error("loadWorktrees error:", e);
+    errorMsg.value = String(e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Poll backend status every 3 seconds to keep UI in sync
+// This detects when terminal windows are closed
+let pollInterval: number | null = null;
+import { onMounted, onUnmounted } from "vue";
+
+onMounted(() => {
+    checkClaudeSessions(); // Initial check
+    pollInterval = window.setInterval(checkClaudeSessions, 3000);
+});
+
+onUnmounted(() => {
+    if (pollInterval) clearInterval(pollInterval);
+});
+
+// ... existing createWorktree ...
+
+
 const newBranch = ref("");
 const baseBranch = ref("main");
 
@@ -24,31 +113,10 @@ const computedPreviewPath = computed(() => {
 });
 
 // Filter worktrees:
-// 1. Must be inside Global Root (if set)
-// 2. Folder name should roughly match ProjectName- (Optional, but user mentioned "matching rule")
+// Originally we filtered by Global Root, but 'git worktree list' already returns 
+// worktrees specific to this repo. Filtering might hide valid worktrees if path formats differ.
 const visibleWorktrees = computed(() => {
-    if (!globalRoot.value) return worktrees.value;
-    
-    // Normalize global root for comparison (simple check)
-    // In a real app we'd use a robust path lib, but here we strip trailing slash and case insensitive on windows.
-    const normalizedRoot = globalRoot.value.replace(/[\\/]$/, "").toLowerCase();
-    
-    return worktrees.value.filter(wt => {
-        const wtPath = wt.path.replace(/[\\/]/g, "/"); // normalize to forward slashes for easier parsing if mixed
-        // We can just rely on checking if the path string includes the root.
-        // But better: check if it starts with root.
-        
-        // Note: wt.path comes from git, might be full path. 
-        // globalRoot comes from dialog, is full path.
-        
-        const normalizedWtPath = wt.path.replace(/[\\/]/g, "/").toLowerCase();
-        
-        // Check containment
-        // We use forward slash normalized check
-        const slashRoot = normalizedRoot.replace(/\\/g, "/");
-        
-        return normalizedWtPath.startsWith(slashRoot);
-    });
+    return worktrees.value;
 });
 
 async function selectProject() {
@@ -93,19 +161,7 @@ async function selectGlobalRoot() {
   }
 }
 
-async function loadWorktrees() {
-  if (!projectPath.value) return;
-  loading.value = true;
-  errorMsg.value = "";
-  try {
-    const res = await invoke("list_worktrees", { projectPath: projectPath.value });
-    worktrees.value = res as Worktree[];
-  } catch (e) {
-    errorMsg.value = String(e);
-  } finally {
-    loading.value = false;
-  }
-}
+
 
 async function createWorktree() {
   if (!newBranch.value || !globalRoot.value) return;
@@ -260,24 +316,49 @@ async function removeWorktree(path: string, branch?: string) {
                  </div>
 
                  <!-- Footer Actions -->
-                 <div class="pt-4 border-t border-gray-50 flex justify-between items-center">
-                    <button 
-                       @click="openFolder(wt.path)"
-                       class="text-sm font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-                       title="Open in Explorer"
-                    >
-                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
-                       Open
-                    </button>
+                 <div class="pt-4 border-t border-gray-50 flex flex-wrap justify-between items-center gap-y-2">
+                     <div class="flex flex-wrap items-center gap-2">
+                        <button 
+                           @click="openFolder(wt.path)"
+                           class="text-sm font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                           title="Open in Explorer"
+                        >
+                           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                           Open
+                        </button>
+                        
+                        <!-- Claude Toggle Button -->
+                        <button 
+                           @click="activeClaudeSessions.has(wt.path) ? closeClaude(wt.path) : openClaude(wt.path)"
+                           class="text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                           :class="activeClaudeSessions.has(wt.path) ? 'text-white bg-red-500 hover:bg-red-600 shadow-sm' : 'text-purple-600 hover:text-purple-800 hover:bg-purple-50'"
+                           :title="activeClaudeSessions.has(wt.path) ? 'Close Terminal' : 'Launch Claude'"
+                        >
+                           <svg v-if="!activeClaudeSessions.has(wt.path)" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                           <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                           {{ activeClaudeSessions.has(wt.path) ? 'Close' : 'Claude' }}
+                        </button>
 
-                    <button 
-                       @click="removeWorktree(wt.path, wt.branch)"
-                       class="text-sm font-medium text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 opacity-80 group-hover:opacity-100"
-                    >
-                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                       Remove
-                    </button>
-                 </div>
+                         <!-- Focus Button (Only show if active) -->
+                         <button 
+                           v-if="activeClaudeSessions.has(wt.path)"
+                           @click="focusClaude(wt.path)"
+                           class="text-sm font-medium text-purple-600 hover:text-purple-800 hover:bg-purple-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                           title="Focus Terminal"
+                        >
+                           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                           Focus
+                        </button>
+                     </div>
+
+                     <button 
+                        @click="removeWorktree(wt.path, wt.branch)"
+                        class="text-sm font-medium text-red-500 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 opacity-80 group-hover:opacity-100"
+                     >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        Remove
+                     </button>
+                  </div>
               </div>
             </div>
         </div>
