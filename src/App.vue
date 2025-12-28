@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Worktree } from "./types";
+
+import { listen } from "@tauri-apps/api/event";
 
 const projectPath = ref<string>("");
 const globalRoot = ref<string>(""); // Global root for new worktrees
@@ -12,6 +14,30 @@ const loading = ref(false);
 const showModal = ref(false);
 const activeClaudeSessions = ref<Set<string>>(new Set());
 
+// Status from Hooks
+const claudeStatus = ref<Record<string, { status: string, message?: string }>>({});
+
+function getClaudeStatus(path: string) {
+    // Normalization attempt: try exact, then try replacing / with \ or vice versa
+    if (claudeStatus.value[path]) return mapStatus(claudeStatus.value[path]);
+    
+    // Check if path has / but state has \
+    const alternate = path.replace(/\//g, '\\');
+    if (claudeStatus.value[alternate]) return mapStatus(claudeStatus.value[alternate]);
+    
+    const alternate2 = path.replace(/\\/g, '/');
+    if (claudeStatus.value[alternate2]) return mapStatus(claudeStatus.value[alternate2]);
+    
+    return null;
+}
+
+function mapStatus(s: { status: string, message?: string }) {
+    if (s.status === 'waiting_auth') return { status: 'waiting_auth', text: 'Waiting for Approval', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' };
+    if (s.status === 'running') return { status: 'running', text: 'Claude Working...', color: 'bg-blue-100 text-blue-800 border-blue-200' };
+    if (s.status === 'idle') return { status: 'idle', text: 'Idle', color: 'bg-green-100 text-green-800 border-green-200' };
+    return null;
+}
+
 async function checkClaudeSessions() {
     try {
         const sessions = await invoke("list_claude_sessions");
@@ -20,6 +46,50 @@ async function checkClaudeSessions() {
         console.error("Failed to list active sessions:", e);
     }
 }
+// ... (skip to onMounted) ...
+// Poll backend status every 3 seconds to keep UI in sync
+// This detects when terminal windows are closed
+let pollInterval: number | null = null;
+
+
+onMounted(async () => {
+    checkClaudeSessions(); // Initial check
+    pollInterval = window.setInterval(checkClaudeSessions, 3000);
+    
+    // Install hooks and listen
+    try {
+        await invoke("install_claude_hooks");
+        console.log("Claude hooks installed/verified.");
+    } catch (e) {
+        console.error("Failed to install hooks:", e);
+    }
+    
+    await listen("claude-status-change", (event: any) => {
+        console.log("Hook Event:", event.payload);
+        const p = event.payload as { path: string, status: string, message?: string };
+        
+        // Fuzzy match to find if we already have a status entry for this path
+        // This prevents creating duplicate entries (e.g. one with / and one with \)
+        // which causes the 'idle' status to shadow the real running status.
+        let key = p.path;
+        const normalizedInput = p.path.replace(/\\/g, '/').toLowerCase();
+        
+        const existingKey = Object.keys(claudeStatus.value).find(k => 
+            k.replace(/\\/g, '/').toLowerCase() === normalizedInput
+        );
+        
+        if (existingKey) {
+            key = existingKey;
+        }
+
+        claudeStatus.value[key] = { status: p.status, message: p.message };
+        
+        if (p.status === 'running' || p.status === 'waiting_auth') {
+            activeClaudeSessions.value.add(key);
+        }
+    });
+});
+
 
 async function openClaude(path: string) {
     loading.value = true;
@@ -27,6 +97,7 @@ async function openClaude(path: string) {
         await invoke("open_claude", { path });
         // Add to local state optimistically, backend confirms
         activeClaudeSessions.value.add(path);
+        claudeStatus.value[path] = { status: 'idle' };
         // Maybe trigger a refresh of status just in case
         setTimeout(checkClaudeSessions, 500); 
     } catch (e) {
@@ -51,6 +122,7 @@ async function closeClaude(path: string) {
     try {
         await invoke("kill_claude_session", { path });
         activeClaudeSessions.value.delete(path);
+        if (claudeStatus.value[path]) delete claudeStatus.value[path];
         // Force a check just in case
         setTimeout(checkClaudeSessions, 500);
     } catch (e) {
@@ -84,19 +156,7 @@ async function loadWorktrees() {
   }
 }
 
-// Poll backend status every 3 seconds to keep UI in sync
-// This detects when terminal windows are closed
-let pollInterval: number | null = null;
-import { onMounted, onUnmounted } from "vue";
 
-onMounted(() => {
-    checkClaudeSessions(); // Initial check
-    pollInterval = window.setInterval(checkClaudeSessions, 3000);
-});
-
-onUnmounted(() => {
-    if (pollInterval) clearInterval(pollInterval);
-});
 
 // ... existing createWorktree ...
 
@@ -304,10 +364,22 @@ async function removeWorktree(path: string, branch?: string) {
                     <div class="flex-1 min-w-0 pr-3">
                        <h3 class="font-bold text-lg text-gray-800 truncate" :title="wt.branch">{{ wt.branch || 'Detached' }}</h3>
                     </div>
-                    <div class="flex-shrink-0">
-                       <span class="font-mono text-[10px] uppercase bg-gray-100 text-gray-500 px-2 py-1 rounded-md border border-gray-200">{{ wt.head_hash.substring(0, 7) }}</span>
-                    </div>
-                 </div>
+                     <div class="flex-shrink-0 flex items-center gap-2">
+                        <!-- Claude Status Badge -->
+                         <div v-if="getClaudeStatus(wt.path)" class="text-[10px] font-bold px-2 py-1 rounded-md border uppercase tracking-wide flex items-center gap-1.5 transition-all shadow-sm" :class="getClaudeStatus(wt.path)?.color">
+                             <span v-if="getClaudeStatus(wt.path)?.status === 'running'" class="relative flex h-2 w-2">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+                             </span>
+                             <span v-else-if="getClaudeStatus(wt.path)?.status === 'waiting_auth'" class="relative flex h-2 w-2">
+                                <span class="animate-bounce absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+                             </span>
+                             {{ getClaudeStatus(wt.path)?.text }}
+                         </div>
+                        <span class="font-mono text-[10px] uppercase bg-gray-100 text-gray-500 px-2 py-1 rounded-md border border-gray-200">{{ wt.head_hash.substring(0, 7) }}</span>
+                     </div>
+                  </div>
 
                  <!-- Path Info -->
                  <div class="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">Location</div>

@@ -1,11 +1,33 @@
 use std::process::Command;
 use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tauri::{State, Manager, Emitter};
+use std::sync::Arc;
+use axum::{
+    routing::post,
+    Router,
+    Json,
+    extract::State as AxumState,
+};
+use tauri_plugin_notification::NotificationExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Worktree {
     path: String,
     head_hash: String,
     branch: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct HookPayload {
+    path: String,
+    status: String, // "waiting_auth", "running", "idle"
+    message: Option<String>
+}
+
+struct ServerState {
+    app_handle: tauri::AppHandle,
 }
 
 fn parse_worktrees(output: &str) -> Vec<Worktree> {
@@ -140,9 +162,110 @@ fn open_worktree_dir(path: String) -> Result<(), String> {
     Ok(())
 }
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use tauri::State;
+async fn hook_handler(
+    AxumState(state): AxumState<Arc<ServerState>>,
+    Json(payload): Json<HookPayload>,
+) {
+    println!("Received hook: {} - {}", payload.path, payload.status);
+    use tauri::Emitter;
+    let _ = state.app_handle.emit("claude-status-change", &payload);
+    
+    if payload.status == "waiting_auth" {
+         let _ = state.app_handle.notification()
+            .builder()
+            .title("Claude Permission Request")
+            .body("Claude is waiting for your approval.")
+            .show();
+    }
+}
+
+#[tauri::command]
+fn install_claude_hooks() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let user_profile = std::env::var("USERPROFILE").map_err(|_| "Could not find USERPROFILE")?;
+        let claude_dir = std::path::Path::new(&user_profile).join(".claude");
+        let settings_path = claude_dir.join("settings.json");
+        let hooks_dir = claude_dir.join("hooks");
+        
+        if !claude_dir.exists() {
+             std::fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
+        }
+        if !hooks_dir.exists() {
+             std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+        }
+        
+        // 1. Write Hook Script
+        let hook_script_path = hooks_dir.join("git-worktree-hook.ps1");
+        let script_content = r#"
+param (
+    [string]$Type
+)
+
+$Path = Get-Location
+$Payload = @{
+    path = $Path.Path
+    status = "idle"
+    message = ""
+}
+
+switch ($Type) {
+    "PermissionRequest" { $Payload.status = "waiting_auth" }
+    "PreToolUse" { $Payload.status = "running" }
+    "PostToolUse" { $Payload.status = "running" }
+    "Stop" { $Payload.status = "idle" }
+}
+
+try {
+    Invoke-RestMethod -Uri "http://localhost:36911/claude/status" -Method Post -Body ($Payload | ConvertTo-Json) -ContentType "application/json" -ErrorAction SilentlyContinue
+} catch {}
+"#;
+        std::fs::write(&hook_script_path, script_content).map_err(|e| e.to_string())?;
+        
+        // 2. Update settings.json
+        // This is tricky without a JSON parser crate helper, but I imported serde_json
+        // I need to read existing or create new.
+        let mut settings: serde_json::Value = if settings_path.exists() {
+            let content = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+            serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        } else {
+             serde_json::json!({})
+        };
+        
+        if settings.get("hooks").is_none() {
+            settings["hooks"] = serde_json::json!({});
+        }
+        
+        // Use ampersand execution operator which handles quoted paths better in some contexts
+        // Also stick to backslashes but escape them for JSON string
+        let path_str = hook_script_path.to_string_lossy().to_string();
+        let cmd_base = format!("powershell -ExecutionPolicy Bypass -Command \"& '{}' -Type\"", path_str);
+        
+        // Helper to create the new hook structure: [{ "hooks": [{ "type": "command", "command": "..." }] }]
+        // We omit "matcher" to apply to all events of that type
+        let make_hook = |event_type: &str| {
+            serde_json::json!([
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": format!("{} '{}'\"", cmd_base, event_type)
+                        }
+                    ]
+                }
+            ])
+        };
+
+        settings["hooks"]["PermissionRequest"] = make_hook("PermissionRequest");
+        settings["hooks"]["PreToolUse"] = make_hook("PreToolUse");
+        settings["hooks"]["PostToolUse"] = make_hook("PostToolUse");
+        settings["hooks"]["Stop"] = make_hook("Stop");
+        
+        let new_content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+        std::fs::write(&settings_path, new_content).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 struct ClaudeState(Mutex<HashMap<String, u32>>);
 
@@ -306,8 +429,9 @@ fn kill_claude_session(path: String, state: State<'_, ClaudeState>) -> Result<()
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_notification::init())
     .manage(ClaudeState(Mutex::new(HashMap::new())))
-    .invoke_handler(tauri::generate_handler![list_worktrees, create_worktree, remove_worktree, open_worktree_dir, open_claude, focus_claude, list_claude_sessions, kill_claude_session])
+    .invoke_handler(tauri::generate_handler![list_worktrees, create_worktree, remove_worktree, open_worktree_dir, open_claude, focus_claude, list_claude_sessions, kill_claude_session, install_claude_hooks])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -316,6 +440,25 @@ pub fn run() {
             .build(),
         )?;
       }
+
+      // Start local Hook Server
+      let app_handle = app.handle().clone();
+      tauri::async_runtime::spawn(async move {
+          let state = Arc::new(ServerState { app_handle });
+          
+          let router = Router::new()
+              .route("/claude/status", post(hook_handler))
+              .with_state(state);
+              
+          // Silent unwrap for now, assumes port 36911 is free.
+          if let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:36911").await {
+              println!("Hook server running on 36911");
+              let _ = axum::serve(listener, router).await;
+          } else {
+              eprintln!("Failed to bind port 36911 for Hook Server");
+          }
+      });
+      
       Ok(())
     })
     .run(tauri::generate_context!())
