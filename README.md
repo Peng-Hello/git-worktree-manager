@@ -1,49 +1,83 @@
-# Git Worktree 管理器
+# Git Worktree Manager
 
-这是一个基于 Tauri + Vue 3 的桌面应用程序，旨在简化 `git worktree` 的使用。它可以帮助开发者轻松创建、管理和切换多个并行的代码工作区。
+<div align="center">
 
-## ✨ 功能特性
+![Git Worktree Manager](./assets/01.png)
 
-- **可视化管理**: 直观地查看当前项目的所有 Worktree。
-- **一键创建**: 输入功能分支名，自动生成独立的工作文件夹。
-- **环境隔离**: 每个需求跑在独立的文件夹中，互不干扰，无需反复 `git stash`。
-- **快速清理**: 完成开发后，一键删除工作区和关联文件夹。
+**基于 Tauri + Vue 3 的现代化 Git Worktree 管理工具**  
+*告别繁琐的 `git stash`，拥抱并行的多分支开发工作流*
+
+</div>
+
+## 📖 为什么开发这个工具？
+
+**核心痛点：如何优雅地让多个 AI Agent (Claude Code) 同时为一个项目工作？**
+
+随着 AI 辅助编程的普及，我们经常需要让多个 Claude Code 实例并行处理不同的任务（例如：Agent A 修 Bug，Agent B 写新功能，Agent C 做重构）。但如果让它们都在同一个项目目录下操作：
+- **文件冲突**：多个 AI 同时修改文件，导致相互覆盖或 Git 锁死。
+- **上下文污染**：Agent A 读取到了 Agent B 改了一半的代码，产生幻觉或逻辑错误。
+- **环境打架**：多个进程争抢编译锁或端口。
+
+**Git Worktree 是这个场景下的“物理隔离舱”。** 它允许我们从同一个仓库中检出多个**独立的文件系统工作区**。
+
+**Git Worktree Manager 的本质，是一个面向多 Agent 协作的编排管理终端。**
+它不仅仅是管理 Git 分支，更是为了**物理隔离**多个 AI 的工作环境。你可以轻松为每个任务创建一个“沙箱”，让 Claude 在里面大展拳脚而不因为文件冲突“打架”。把它想象成你的 **AI 工程师团队的工位管理器**。
+
+## ✨ 核心功能
+
+### 🌳 可视化工作区管理
+- 一览无余地查看当前仓库关联的所有 Worktree。
+- 直观展示分支名称、Commit Hash 和路径信息。
+- 自动识别并管理“野生”的 Worktree。
+
+### ⚡ 极速创建与销毁
+- **一键创建**：只需输入新分支名（如 `feat/login`），自动创建同级目录。
+- **安全清理**：开发完成后，点击 Remove 即可连同分支和文件夹一起安全删除，保持磁盘整洁。
+
+### 🤖 Claude Code 深度集成 (New!)
+专为 AI 辅助编程打造的深度集成体验：
+- **内嵌终端**：直接在对应的 Worktree 目录下启动 Claude Code。
+- **由 AI 驱动的状态感知**：卡片实时显示 Claude 的工作状态：
+    - 🟡 **Waiting for Approval**: 当 Claude请求权限时，卡片高亮并发送系统通知。
+    - 🔵 **Working**: AI 正在思考或执行任务。
+    - 🟢 **Idle**: 任务完成，随时待命。
+- **自动配置**：开箱即用，自动配置 Claude Hooks，无需手动折腾脚本。
+
+## 📷 软件截图
+
+| 主界面仪表盘 | Claude 智能集成 |
+|:---:|:---:|
+| ![Dashboard](./assets/01.png) | ![Claude Integration](./assets/02.png) |
+
+> *界面展示了清爽的卡片式布局以及与 Claude Code 联动时的状态变化*
 
 ## 🛠️ 技术栈
 
-- **Core**: [Tauri 2.0](https://tauri.app/) (Rust)
-- **Frontend**: Vue 3 + TypeScript
-- **Styling**: TailwindCSS
+- **Core**: [Tauri 2.0](https://tauri.app/) (Rust) - 极致轻量与安全
+- **Frontend**: Vue 3 + TypeScript + TailwindCSS - 顺滑的交互体验
+- **AI Integration**: Rust Axum Server + PowerShell Hooks
 
 ## 🚀 快速开始
 
-### 前置要求
-
-- Node.js (v18+)
-- Rust (v1.70+) -> [安装指南](https://www.rust-lang.org/tools/install)
-
-### 安装依赖
-
+### 1. 安装依赖
 ```bash
 npm install
 ```
 
-### 开发模式运行
-
+### 2. 开发模式运行
 ```bash
 npm run tauri dev
 ```
+*提示：如果是 Windows 系统，首次启动会自动安装 Claude Hooks 脚本到您的用户目录。*
 
-### 构建生产包
-
+### 3. 构建生产包
 ```bash
 npm run tauri build
 ```
 
-## 📖 使用方法
+## 📝 使用指南
 
-1. 打开应用，选择你的 Git 主仓库目录。
-2. 点击 "New Worktree"，输入新分支名称（如 `feat/user-login`）。
-3. 应用会自动在主仓库同级目录下创建一个 `feat-user-login` 文件夹。
-4. 使用你喜欢的 IDE 打开该新文件夹进行开发。
-5. 开发完成后，点击 "Remove" 即可清理环境。
+1.  **选择仓库**：点击右上角选择你的 Git 主仓库目录。
+2.  **设置根目录**：选择一个文件夹作为所有新 Worktree 的存放跟目录（建议选在主仓库的上级目录）。
+3.  **新建工作区**：点击 "New Worktree"，输入分支名，即刻开始并行开发。
+4.  **调用 Claude**：点击卡片上的 "Claude" 按钮，唤起 AI 助手，它会自动进入该目录为你写代码。
