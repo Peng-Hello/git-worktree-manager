@@ -285,7 +285,7 @@ fn link_gitignored_items(project_path: &str, worktree_path: &str) {
 }
 
 #[tauri::command]
-fn create_worktree(project_path: String, path: String, branch: String, base: Option<String>) -> Result<(), String> {
+fn create_worktree(project_path: String, path: String, branch: String, base: Option<String>, smart_sync: bool) -> Result<(), String> {
     let mut cmd = create_command("git");
     cmd.current_dir(&project_path)
        .arg("worktree")
@@ -304,8 +304,10 @@ fn create_worktree(project_path: String, path: String, branch: String, base: Opt
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
-    // Auto-link gitignored files
-    link_gitignored_items(&project_path, &path);
+    // Auto-link gitignored files if enabled
+    if smart_sync {
+        link_gitignored_items(&project_path, &path);
+    }
 
     Ok(())
 }

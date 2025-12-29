@@ -163,6 +163,8 @@ async function loadWorktrees() {
 const newBranch = ref("");
 const baseBranch = ref("main");
 
+const enableSmartSync = ref(false);
+
 // Computed target path: GlobalRoot / ProjectName-BranchName
 const computedPreviewPath = computed(() => {
     if (!globalRoot.value || !newBranch.value) return "";
@@ -236,10 +238,13 @@ async function createWorktree() {
         projectPath: projectPath.value,
         path: computedPreviewPath.value,
         branch: newBranch.value,
-        base: baseBranch.value || null
+        base: baseBranch.value || null,
+        smartSync: enableSmartSync.value
      });
      showModal.value = false;
      newBranch.value = "";
+     enableSmartSync.value = false; // Reset to default off
+
      // Reload
      loadWorktrees();
   } catch (e) {
@@ -484,6 +489,25 @@ async function removeWorktree(path: string, branch?: string) {
                       <input v-model="baseBranch" class="w-full pl-9 pr-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-medium text-gray-800" />
                       <svg class="w-4 h-4 text-gray-400 absolute left-3 top-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
                     </div>
+                 </div>
+
+
+                 <!-- Smart Sync Toggle -->
+                 <div class="flex items-center justify-between p-3 bg-indigo-50 border border-indigo-100 rounded-xl">
+                    <div>
+                        <span class="block text-sm font-semibold text-gray-800">Smart Dependency Sync</span>
+                        <span class="block text-xs text-gray-500 mt-0.5">Auto-link node_modules etc.</span>
+                    </div>
+                    <button 
+                        @click="enableSmartSync = !enableSmartSync"
+                        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                        :class="enableSmartSync ? 'bg-indigo-600' : 'bg-gray-200'"
+                    >
+                        <span 
+                            class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                            :class="enableSmartSync ? 'translate-x-5' : 'translate-x-0'"
+                        ></span>
+                    </button>
                  </div>
               </div>
 
