@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Git Worktree Manager](./assets/01.png)
+![Git Worktree Manager](./assets/02.png)
 
 **Modern Git Worktree Management GUI built with Tauri + Vue 3**  
 *Say goodbye to `git stash`, embrace parallel multi-branch development workflows*

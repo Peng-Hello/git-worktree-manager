@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Git Worktree Manager](./assets/01.png)
+![Git Worktree Manager](./assets/02.png)
 
 **基于 Tauri + Vue 3 的现代化 Git Worktree 管理工具**  
 *告别繁琐的 `git stash`，拥抱并行的多分支开发工作流*
