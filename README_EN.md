@@ -31,6 +31,7 @@ It's not just about managing Git branches; it's about **physically isolating** w
 - View all Worktrees associated with the current repository at a glance.
 - Intuitively display branch names, commit hashes, and path information.
 - Automatically identify and manage "wild" Worktrees.
+- **Quick Access**: Open workspace folder or launch a dedicated terminal window with one click.
 
 ### ⚡ Rapid Creation & Destruction
 - **One-click Creation**: Just enter a new branch name (e.g., `feat/login`), and a peer directory is automatically created.
@@ -95,6 +96,7 @@ npm run tauri build
 2.  **Set Root Directory**: Choose a folder to store all new Worktrees (recommended to be a peer of the main repo).
 3.  **New Workspace**: Click "New Worktree", enter a branch name, and start parallel development instantly.
 4.  **Call Claude**: Click the "Claude" button on the card to summon the AI assistant; it will automatically enter that directory to write code for you.
+5.  **Open Terminal**: Click the "Terminal" button to launch a PowerShell window in the current directory for manual operations.
 
 ## 📄 License
 
