@@ -369,6 +369,29 @@ fn remove_worktree(project_path: String, worktree_path: String, branch: Option<S
 }
 
 #[tauri::command]
+fn open_terminal(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Use "start powershell -NoExit -WorkingDirectory 'path'" to open a new independent window
+        // We use cmd /c start ... to ensure it breaks away from the parent process tree if needed
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "start", "powershell", "-NoExit", "-ExecutionPolicy", "Bypass", "-WorkingDirectory", &path])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW for the cmd wrapper itself (optional, but good practice)
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if !status.success() {
+            return Err("Failed to launch terminal".to_string());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("Open Terminal is currently Windows only".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn open_worktree_dir(path: String) -> Result<(), String> {
     println!("Attempting to open path: '{}'", path);
     // Try cleaning up the path for Windows
@@ -665,7 +688,7 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_notification::init())
     .manage(ClaudeState(Mutex::new(HashMap::new())))
-    .invoke_handler(tauri::generate_handler![list_worktrees, create_worktree, remove_worktree, open_worktree_dir, open_claude, focus_claude, list_claude_sessions, kill_claude_session, install_claude_hooks])
+    .invoke_handler(tauri::generate_handler![list_worktrees, create_worktree, remove_worktree, open_worktree_dir, open_claude, focus_claude, list_claude_sessions, kill_claude_session, install_claude_hooks, open_terminal])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

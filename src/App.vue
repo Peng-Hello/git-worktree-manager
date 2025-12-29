@@ -108,6 +108,14 @@ async function focusClaude(path: string) {
     }
 }
 
+async function openTerminal(path: string) {
+    try {
+        await invoke("open_terminal", { path });
+    } catch (e) {
+        errorMsg.value = "Failed to open terminal: " + String(e);
+    }
+}
+
 async function closeClaude(path: string) {
     if (!confirm("Are you sure you want to close this terminal session?")) return;
     loading.value = true;
@@ -395,6 +403,15 @@ async function removeWorktree(path: string, branch?: string) {
                         >
                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                            Open
+                        </button>
+
+                        <button 
+                           @click="openTerminal(wt.path)"
+                           class="text-sm font-medium text-gray-500 hover:text-gray-900 hover:bg-gray-100 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                           title="Open Terminal"
+                        >
+                           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                           Terminal
                         </button>
                         
                         <!-- Claude Toggle Button -->
