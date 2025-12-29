@@ -266,8 +266,8 @@ fn link_gitignored_items(project_path: &str, worktree_path: &str) {
             ps1_content.push_str(&format!("cmd /c '{}'\n", cmd));
         }
         
-        ps1_content.push_str("Write-Host 'Press Key to exit...'\n");
-        ps1_content.push_str("$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')\n");
+        // ps1_content.push_str("Write-Host 'Press Key to exit...'\n");
+        // ps1_content.push_str("$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')\n");
         
         let temp_dir = std::env::temp_dir();
         let ps1_path = temp_dir.join("git_worktree_links.ps1");
@@ -275,10 +275,12 @@ fn link_gitignored_items(project_path: &str, worktree_path: &str) {
         if std::fs::write(&ps1_path, ps1_content).is_ok() {
             let ps1_path_str = ps1_path.display().to_string();
             
-            // Run PowerShell as Admin, executing the generated script
+            // Run PowerShell as Admin, executing the generated script SILENTLY
+            // 1. We use create_command("powershell") which creates a hidden process for the "launcher" shell.
+            // 2. We use Start-Process with -WindowStyle Hidden so the ELEVATED shell is also hidden.
             let _ = create_command("powershell")
                 .arg("-Command")
-                .arg(format!("Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy Bypass -File \"{}\"' -Wait", ps1_path_str))
+                .arg(format!("Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File \"{}\"' -Wait", ps1_path_str))
                 .output();
         }
     }
