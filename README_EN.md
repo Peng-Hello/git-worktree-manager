@@ -49,6 +49,7 @@ Deeply integrated experience designed for AI-assisted programming:
 Specially designed for large Monorepo projects like Vben Admin:
 - **Recursive Identification**: Automatically reads the main repo's `.gitignore` and recursively scans/links all ignored directories (e.g., `apps/*/node_modules`, `.env`, `target`).
 - **Zero Disk Space**: Uses Junction/Symlink technology—Worktrees are generated in seconds without consuming extra disk space.
+- **Optional Toggle (New)**: An optional switch (default off) in the creation modal, allowing you to decide when to link `node_modules`.
 - **Automated Admin Batching**: If permission issues occur (e.g., Windows restricting link creation), all requests are collected into a **single UAC prompt** to get everything done at once.
 
 ## ⚠️ Important Notes
