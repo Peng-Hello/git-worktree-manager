@@ -17,18 +17,14 @@ const activeClaudeSessions = ref<Set<string>>(new Set());
 // Status from Hooks
 const claudeStatus = ref<Record<string, { status: string, message?: string }>>({});
 
+// Normalize path to canonical format: forward slashes, lowercase
+function normalizePath(path: string): string {
+    return path.replace(/\\/g, '/').toLowerCase();
+}
+
 function getClaudeStatus(path: string) {
-    // Normalization attempt: try exact, then try replacing / with \ or vice versa
-    if (claudeStatus.value[path]) return mapStatus(claudeStatus.value[path]);
-    
-    // Check if path has / but state has \
-    const alternate = path.replace(/\//g, '\\');
-    if (claudeStatus.value[alternate]) return mapStatus(claudeStatus.value[alternate]);
-    
-    const alternate2 = path.replace(/\\/g, '/');
-    if (claudeStatus.value[alternate2]) return mapStatus(claudeStatus.value[alternate2]);
-    
-    return null;
+    const normalizedPath = normalizePath(path);
+    return claudeStatus.value[normalizedPath] ? mapStatus(claudeStatus.value[normalizedPath]) : null;
 }
 
 function mapStatus(s: { status: string, message?: string }) {
@@ -64,39 +60,35 @@ onMounted(async () => {
     }
     
     await listen("claude-status-change", (event: any) => {
-        console.log("Hook Event:", event.payload);
+        console.log("=== Hook Event Received ===");
+        console.log("Raw payload:", event.payload);
         const p = event.payload as { path: string, status: string, message?: string };
         
-        // Fuzzy match to find if we already have a status entry for this path
-        // This prevents creating duplicate entries (e.g. one with / and one with \)
-        // which causes the 'idle' status to shadow the real running status.
-        let key = p.path;
-        const normalizedInput = p.path.replace(/\\/g, '/').toLowerCase();
+        // Always use normalized path as key
+        const normalizedPath = normalizePath(p.path);
         
-        const existingKey = Object.keys(claudeStatus.value).find(k => 
-            k.replace(/\\/g, '/').toLowerCase() === normalizedInput
-        );
-        
-        if (existingKey) {
-            key = existingKey;
-        }
+        console.log("Normalized hook path:", normalizedPath);
+        console.log("Existing claudeStatus keys:", Object.keys(claudeStatus.value));
 
-        claudeStatus.value[key] = { status: p.status, message: p.message };
+        claudeStatus.value[normalizedPath] = { status: p.status, message: p.message };
+        console.log("Updated claudeStatus:", claudeStatus.value);
         
         if (p.status === 'running' || p.status === 'waiting_auth') {
-            activeClaudeSessions.value.add(key);
+            activeClaudeSessions.value.add(normalizedPath);
         }
+        console.log("===========================");
     });
 });
 
 
 async function openClaude(path: string) {
     loading.value = true;
+    const normalizedPath = normalizePath(path);
     try {
         await invoke("open_claude", { path });
         // Add to local state optimistically, backend confirms
-        activeClaudeSessions.value.add(path);
-        claudeStatus.value[path] = { status: 'idle' };
+        activeClaudeSessions.value.add(normalizedPath);
+        claudeStatus.value[normalizedPath] = { status: 'idle' };
         // Maybe trigger a refresh of status just in case
         setTimeout(checkClaudeSessions, 500); 
     } catch (e) {
@@ -107,21 +99,23 @@ async function openClaude(path: string) {
 }
 
 async function focusClaude(path: string) {
+    const normalizedPath = normalizePath(path);
     try {
         await invoke("focus_claude", { path });
     } catch (e) {
         errorMsg.value = "Focus failed (Terminal might be closed): " + String(e);
-        activeClaudeSessions.value.delete(path);
+        activeClaudeSessions.value.delete(normalizedPath);
     }
 }
 
 async function closeClaude(path: string) {
     if (!confirm("Are you sure you want to close this terminal session?")) return;
     loading.value = true;
+    const normalizedPath = normalizePath(path);
     try {
         await invoke("kill_claude_session", { path });
-        activeClaudeSessions.value.delete(path);
-        if (claudeStatus.value[path]) delete claudeStatus.value[path];
+        activeClaudeSessions.value.delete(normalizedPath);
+        if (claudeStatus.value[normalizedPath]) delete claudeStatus.value[normalizedPath];
         // Force a check just in case
         setTimeout(checkClaudeSessions, 500);
     } catch (e) {

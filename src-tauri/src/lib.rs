@@ -388,7 +388,11 @@ async fn hook_handler(
     AxumState(state): AxumState<Arc<ServerState>>,
     Json(payload): Json<HookPayload>,
 ) {
-    println!("Received hook: {} - {}", payload.path, payload.status);
+    println!("=== Hook Received ===");
+    println!("Path: '{}'", payload.path);
+    println!("Status: {}", payload.status);
+    println!("====================");
+    
     use tauri::Emitter;
     let _ = state.app_handle.emit("claude-status-change", &payload);
     
@@ -438,11 +442,19 @@ switch ($Type) {
     "Stop" { $Payload.status = "idle" }
 }
 
+
 try {
-    Invoke-RestMethod -Uri "http://localhost:36911/claude/status" -Method Post -Body ($Payload | ConvertTo-Json) -ContentType "application/json" -ErrorAction SilentlyContinue
+    $jsonBody = $Payload | ConvertTo-Json -Compress
+    $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
+    Invoke-RestMethod -Uri "http://localhost:36911/claude/status" -Method Post -Body $utf8Bytes -ContentType "application/json; charset=utf-8" -ErrorAction SilentlyContinue
 } catch {}
 "#;
-        std::fs::write(&hook_script_path, script_content).map_err(|e| e.to_string())?;
+        // Write with UTF-8 BOM to ensure PowerShell interprets it correctly
+        let bom = b"\xEF\xBB\xBF";
+        let mut content_with_bom = Vec::new();
+        content_with_bom.extend_from_slice(bom);
+        content_with_bom.extend_from_slice(script_content.as_bytes());
+        std::fs::write(&hook_script_path, content_with_bom).map_err(|e| e.to_string())?;
         
         // 2. Update settings.json
         // This is tricky without a JSON parser crate helper, but I imported serde_json
