@@ -12,6 +12,18 @@ use axum::{
 };
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+fn create_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Worktree {
     path: String,
@@ -72,7 +84,7 @@ fn parse_worktrees(output: &str) -> Vec<Worktree> {
 
 #[tauri::command]
 fn list_worktrees(project_path: String) -> Result<Vec<Worktree>, String> {
-    let output = Command::new("git")
+    let output = create_command("git")
         .arg("worktree")
         .arg("list")
         .arg("--porcelain")
@@ -198,7 +210,7 @@ fn link_gitignored_items(project_path: &str, worktree_path: &str) {
                              let src_str = src_path.display().to_string().replace("/", "\\");
                              let cmd_str = format!("mklink /J \"{}\" \"{}\"", dest_str, src_str);
                              
-                             let output = Command::new("cmd").arg("/C").arg(&cmd_str).output();
+                             let output = create_command("cmd").arg("/C").arg(&cmd_str).output();
                              let mut success = false;
                              if let Ok(o) = output {
                                  if o.status.success() {
@@ -264,7 +276,7 @@ fn link_gitignored_items(project_path: &str, worktree_path: &str) {
             let ps1_path_str = ps1_path.display().to_string();
             
             // Run PowerShell as Admin, executing the generated script
-            let _ = Command::new("powershell")
+            let _ = create_command("powershell")
                 .arg("-Command")
                 .arg(format!("Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy Bypass -File \"{}\"' -Wait", ps1_path_str))
                 .output();
@@ -274,7 +286,7 @@ fn link_gitignored_items(project_path: &str, worktree_path: &str) {
 
 #[tauri::command]
 fn create_worktree(project_path: String, path: String, branch: String, base: Option<String>) -> Result<(), String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = create_command("git");
     cmd.current_dir(&project_path)
        .arg("worktree")
        .arg("add")
@@ -302,7 +314,7 @@ fn create_worktree(project_path: String, path: String, branch: String, base: Opt
 fn remove_worktree(project_path: String, worktree_path: String, branch: Option<String>) -> Result<(), String> {
     // 1. Remove Worktree
     // We use --force, but if it fails (e.g. locked files or strange junctions), we manual clean.
-    let output = Command::new("git")
+    let output = create_command("git")
         .current_dir(&project_path)
         .arg("worktree")
         .arg("remove")
@@ -330,13 +342,13 @@ fn remove_worktree(project_path: String, worktree_path: String, branch: Option<S
     }
 
     // Run prune to clean up any stale git metadata if git command failed but we deleted dir
-    let _ = Command::new("git").current_dir(&project_path).arg("worktree").arg("prune").output();
+    let _ = create_command("git").current_dir(&project_path).arg("worktree").arg("prune").output();
 
     // 2. Delete Branch if provided
     if let Some(branch_name) = branch {
          // Only attempt delete if branch is valid
          if !branch_name.is_empty() {
-             let branch_output = Command::new("git")
+             let branch_output = create_command("git")
                 .current_dir(&project_path)
                 .arg("branch")
                 .arg("-D")
@@ -485,7 +497,7 @@ fn open_claude(path: String, state: State<'_, ClaudeState>) -> Result<(), String
     // Spawn PowerShell with Start-Process to ensure new window
     // We use -PassThru to get process info back, and Select-Object -ExpandProperty Id to get the PID
     #[cfg(target_os = "windows")]
-    let output = Command::new("powershell")
+    let output = create_command("powershell")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
@@ -528,7 +540,7 @@ fn focus_claude(path: String, state: State<'_, ClaudeState>) -> Result<(), Strin
          println!("Focusing PID: {}", pid);
          let script = format!("(New-Object -ComObject WScript.Shell).AppActivate({})", pid);
          #[cfg(target_os = "windows")]
-         let output = Command::new("powershell")
+         let output = create_command("powershell")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-Command")
@@ -566,7 +578,7 @@ fn list_claude_sessions(state: State<'_, ClaudeState>) -> Result<Vec<String>, St
     for (path, &pid) in session_map.iter() {
          #[cfg(target_os = "windows")]
          {
-             let check = Command::new("powershell")
+             let check = create_command("powershell")
                 .arg("-ExecutionPolicy")
                 .arg("Bypass")
                 .arg("-NoProfile")
@@ -608,7 +620,7 @@ fn kill_claude_session(path: String, state: State<'_, ClaudeState>) -> Result<()
          #[cfg(target_os = "windows")]
          {
              // Use taskkill /F /PID <pid> /T to force kill tree (including window)
-             let output = Command::new("taskkill")
+             let output = create_command("taskkill")
                 .arg("/F")
                 .arg("/T")
                 .arg("/PID")
